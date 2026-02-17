@@ -49,7 +49,7 @@
   </div>
 
   <script>
-    // ✅ Make sure that this is a link to your published CSV from the "Public" sheet
+    // ✅ ИСПРАВЛЕНО: правильная ссылка на лист с данными
     const SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR8CeaszDDfqRv2feolE19N9eO3rIoWfw9mXP4TJBuTx-o4d2FHrmWph5c6rS3TiAX1kQf1JlbHOCu2/pub?gid=773665611&single=true&output=csv";
 
     const urlParams = new URLSearchParams(window.location.search);
@@ -59,41 +59,82 @@
     if (!machineId) {
       contentDiv.innerHTML = `<div class="error">❌ Machine ID not specified.<br>Use: ?id=your-machine-id</div>`;
     } else {
-      fetch(SHEET_URL + '?t=' + Date.now())
+      // ИСПРАВЛЕНО: правильное добавление параметра кэширования для URL с параметрами
+      const cacheBuster = Date.now();
+      const fetchUrl = `${SHEET_URL}&_=${cacheBuster}`;
+      
+      fetch(fetchUrl)
         .then(response => {
-          if (!response.ok) throw new Error('Failed to load CSV');
+          if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
           return response.text();
         })
         .then(csv => {
+          // ИСПРАВЛЕНО: проверка на HTML ответ
+          if (csv.trim().startsWith('<!DOCTYPE html>')) {
+            throw new Error('Received HTML instead of CSV. Check sheet permissions.');
+          }
+
           const lines = csv.trim().split('\n').filter(line => line.trim());
           if (lines.length < 2) {
             contentDiv.innerHTML = `<div class="error">⚠️ No data in sheet.</div>`;
             return;
           }
 
-          const headers = lines[0].split(',').map(h => h.replace(/^"(.*)"$/, '$1').trim());
-          const idIndex = headers.indexOf('id');
-          const lastCleanedIndex = headers.indexOf('last_cleaned');
-          const nextDueIndex = headers.indexOf('next_due');
-          const statusIndex = headers.indexOf('status');
+          // Функция для правильного парсинга CSV с кавычками
+          function parseCSVLine(line) {
+            const result = [];
+            let inQuotes = false;
+            let currentCell = '';
+            
+            for (let char of line) {
+              if (char === '"') {
+                inQuotes = !inQuotes;
+              } else if (char === ',' && !inQuotes) {
+                result.push(currentCell.replace(/^"|"$/g, '').trim());
+                currentCell = '';
+              } else {
+                currentCell += char;
+              }
+            }
+            result.push(currentCell.replace(/^"|"$/g, '').trim());
+            return result;
+          }
+
+          const headers = parseCSVLine(lines[0]);
+          console.log('Headers found:', headers); // Для отладки
+          
+          const idIndex = headers.findIndex(h => h.toLowerCase().trim() === 'id');
+          const lastCleanedIndex = headers.findIndex(h => h.toLowerCase().trim() === 'last_cleaned');
+          const nextDueIndex = headers.findIndex(h => h.toLowerCase().trim() === 'next_due');
+          const statusIndex = headers.findIndex(h => h.toLowerCase().trim() === 'status');
+
+          if (idIndex === -1) {
+            contentDiv.innerHTML = `<div class="error">⚠️ 'id' column not found. Headers: ${headers.join(' | ')}</div>`;
+            return;
+          }
 
           let found = false;
-          const searchId = machineId.trim();
-
+          const normalizedSearchId = machineId.toString().trim();
+          
           for (let i = 1; i < lines.length; i++) {
-            const row = lines[i].split(',').map(cell => cell.replace(/^"(.*)"$/, '$1').trim());
-            const rowId = (idIndex !== -1 ? row[idIndex] : row[0]) || '';
-
-            if (rowId === searchId) {
-              const lastCleaned = (lastCleanedIndex !== -1 ? row[lastCleanedIndex] : row[1]) || '—';
-              const nextDue = (nextDueIndex !== -1 ? row[nextDueIndex] : row[2]) || '—';
-              const status = (statusIndex !== -1 ? row[statusIndex] : row[3]) || 'Unknown';
+            if (!lines[i].trim()) continue;
+            
+            const row = parseCSVLine(lines[i]);
+            
+            // ИСПРАВЛЕНО: удаляем "id = " из значения, если оно есть
+            let rowId = row[idIndex] ? row[idIndex].toString().trim() : '';
+            rowId = rowId.replace(/^id\s*=\s*/i, '');
+            
+            if (rowId && rowId === normalizedSearchId) {
+              const lastCleaned = (lastCleanedIndex !== -1 && row[lastCleanedIndex]) ? row[lastCleanedIndex] : '—';
+              const nextDue = (nextDueIndex !== -1 && row[nextDueIndex]) ? row[nextDueIndex] : '—';
+              const status = (statusIndex !== -1 && row[statusIndex]) ? row[statusIndex] : 'Unknown';
 
               contentDiv.innerHTML = `
                 <div class="status-card">
                   <div class="field">
                     <div class="label">Machine ID</div>
-                    <div class="value">${searchId}</div>
+                    <div class="value">${rowId}</div>
                   </div>
                   <div class="field">
                     <div class="label">Last cleaned</div>
@@ -120,7 +161,7 @@
         })
         .catch(err => {
           console.error('Error:', err);
-          contentDiv.innerHTML = `<div class="error">❌ Failed to load data.<br>Please try again later.</div>`;
+          contentDiv.innerHTML = `<div class="error">❌ Failed to load data.<br>${err.message}</div>`;
         });
     }
   </script>
